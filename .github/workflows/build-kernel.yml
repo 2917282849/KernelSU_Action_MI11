@@ -96,7 +96,19 @@ jobs:
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace
         mkdir clang-aosp
-        wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/${{ env.CLANG_BRANCH }}/clang-${{ env.CLANG_VERSION }}.tar.gz
+        # 带重试的下载（Google 源偶尔返回 503 / 网络抖动）
+        fetch() {
+          local url="$1" out="$2"
+          for i in 1 2 3 4 5; do
+            echo "[fetch] 第 $i 次尝试: $url"
+            if wget -q --tries=2 --waitretry=5 --timeout=60 -O "$out" "$url"; then
+              echo "[fetch] 成功: $out"; return 0
+            fi
+            echo "[fetch] 第 $i 次失败，等待后重试..."; rm -f "$out"; sleep 10
+          done
+          echo "[fetch] 最终失败: $url"; return 1
+        }
+        fetch "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/${{ env.CLANG_BRANCH }}/clang-${{ env.CLANG_VERSION }}.tar.gz" "clang-${{ env.CLANG_VERSION }}.tar.gz"
         tar -C clang-aosp/ -zxvf clang-${{ env.CLANG_VERSION }}.tar.gz
 
     - name: Download Custom-Clang
@@ -121,16 +133,28 @@ jobs:
       if: env.USE_CUSTOM_GCC_64 != 'true' || env.USE_CUSTOM_GCC_32 != 'true'
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace
+        # 带重试的下载（Google 源偶尔 503）
+        fetch() {
+          local url="$1" out="$2"
+          for i in 1 2 3 4 5; do
+            echo "[fetch] 第 $i 次尝试: $url"
+            if wget -q --tries=2 --waitretry=5 --timeout=60 -O "$out" "$url"; then
+              echo "[fetch] 成功: $out"; return 0
+            fi
+            echo "[fetch] 第 $i 次失败，等待后重试..."; rm -f "$out"; sleep 10
+          done
+          echo "[fetch] 最终失败: $url"; return 1
+        }
         if [ ${{ env.ENABLE_GCC_ARM64 }} = true ]; then
             mkdir gcc-64
-            wget -O gcc-aarch64.tar.gz https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/tags/android-12.1.0_r27.tar.gz
+            fetch "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/tags/android-12.1.0_r27.tar.gz" gcc-aarch64.tar.gz
             tar -C gcc-64/ -zxvf gcc-aarch64.tar.gz
             echo "GCC_64=CROSS_COMPILE=$GITHUB_WORKSPACE/kernel_workspace/gcc-64/bin/aarch64-linux-android-" >> $GITHUB_ENV
         fi
 
         if [ ${{ env.ENABLE_GCC_ARM32 }} = true ]; then
             mkdir gcc-32
-            wget -O gcc-arm.tar.gz https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/+archive/refs/tags/android-12.1.0_r27.tar.gz
+            fetch "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/+archive/refs/tags/android-12.1.0_r27.tar.gz" gcc-arm.tar.gz
             tar -C gcc-32/ -zxvf gcc-arm.tar.gz
             echo "GCC_32=CROSS_COMPILE_ARM32=$GITHUB_WORKSPACE/kernel_workspace/gcc-32/bin/arm-linux-androideabi-" >> $GITHUB_ENV
         fi
@@ -182,7 +206,16 @@ jobs:
     - name: Download kernel source
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace
-        git clone ${{ env.KERNEL_SOURCE }} -b ${{ env.KERNEL_SOURCE_BRANCH }} android-kernel --depth=1
+        # 带重试的克隆（网络抖动时自动重试）
+        for i in 1 2 3; do
+          echo "[clone] 第 $i 次尝试"
+          if git clone ${{ env.KERNEL_SOURCE }} -b ${{ env.KERNEL_SOURCE_BRANCH }} android-kernel --depth=1; then
+            echo "[clone] 成功"; break
+          fi
+          echo "[clone] 第 $i 次失败，清理后重试..."
+          rm -rf android-kernel; sleep 10
+          [ "$i" = 3 ] && { echo "[clone] 最终失败"; exit 1; }
+        done
         if [[ ${{ env.ADD_LOCALVERSION_TO_FILENAME }} == 'true' ]]; then
           echo "LOCALVERSION=$(cat android-kernel/localversion)" >> $GITHUB_ENV
         else
