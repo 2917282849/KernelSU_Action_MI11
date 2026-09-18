@@ -374,6 +374,16 @@ jobs:
         export PATH=$GITHUB_WORKSPACE/kernel_workspace/clang-aosp/bin:$PATH
         export KBUILD_BUILD_HOST=Github-Action
         export KBUILD_BUILD_USER=$(echo ${{ github.actor }} | tr A-Z a-z)
+        # ★★ 复刻原厂 UTS_VERSION（重要，勿删）★★
+        # 小米构建系统会把 f2fs 源码哈希追加到内核版本串尾部，实测原厂为：
+        #   "#1 SMP PREEMPT Tue Nov 28 08:24:49 UTC 2023 f2fs-hash:1e2949fb28"
+        # 而 scripts/mkcompile_h 里 UTS_TRUNCATE="cut -b -64"，上面这串正好 64 字符。
+        # 该串会出现在 /proc/version 与 uname -a 中；MIUI 用户态会读取它
+        # 判断内核是否变更（f2fs 相关），不带后缀可能与原厂行为不一致。
+        # 设成原厂同值 => 我们的 UTS_VERSION 与原厂逐字节相同。
+        # （注：vermagic 不含此串，模块加载不受影响；此处属额外保险）
+        export KBUILD_BUILD_TIMESTAMP="Tue Nov 28 08:24:49 UTC 2023 f2fs-hash:1e2949fb28"
+        export KBUILD_BUILD_VERSION=1
         if [ ! -z ${{ env.KSU_EXPECTED_SIZE }} ] && [ ! -z ${{ env.KSU_EXPECTED_HASH }} ]; then
           export KSU_EXPECTED_SIZE=${{ env.KSU_EXPECTED_SIZE }}
           export KSU_EXPECTED_HASH=${{ env.KSU_EXPECTED_HASH }}
@@ -397,6 +407,16 @@ jobs:
             exit 1
         fi
         echo "[OK] 版本号一致，vermagic 应可匹配原厂模块"
+
+        # ---- 附加校验：UTS_VERSION 是否含原厂 f2fs-hash 后缀 ----
+        IMG=out/arch/${{ env.ARCH }}/boot/${{ env.KERNEL_IMAGE_NAME }}
+        if strings -a "$IMG" | grep -qF "f2fs-hash:1e2949fb28"; then
+            echo "[OK] UTS_VERSION 含原厂 f2fs-hash:1e2949fb28"
+            strings -a "$IMG" | grep -m1 -F "Linux version"
+        else
+            echo "::error::内核版本串缺少 f2fs-hash:1e2949fb28（MIUI 可能据此判断内核变更）"
+            exit 1
+        fi
 
     - name: Verify kernel config vs factory (module ABI compatibility)
       run: |
