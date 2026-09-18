@@ -391,6 +391,7 @@ jobs:
           | sed -E 's/#include <(.*)>/\1/' | sort -u > "$INC" || true
         echo "  被引用的头文件总数: $(wc -l < "$INC" 2>/dev/null || echo 0)"
         echo "  ────────────── 缺失清单 ──────────────"
+        : > missing_headers.txt
         N=0
         while IFS= read -r inc; do
           [ -z "$inc" ] && continue
@@ -401,13 +402,22 @@ jobs:
             continue
           fi
           N=$((N+1))
-          echo "  [缺失] $inc"
+          echo "  [缺失] $inc" | tee -a missing_headers.txt
         done < "$INC"
         echo "  ──────────────────────────────────────"
         echo "  缺失合计: $N 个"
         echo
         echo "  ★ 若其中任何一个属于本次会编译到的驱动，编译必然失败。"
         echo "    修法二选一：① 补上该头文件  ② 在 defconfig 里关掉对应驱动。"
+
+    - name: Upload pre-scan result - 让「缺失清单」不用等编译结束就能取到
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: missing-headers-${{ github.run_number }}
+        path: missing_headers.txt
+        if-no-files-found: ignore
+        retention-days: 3
 
     - name: Setup KernelSU
       if: env.ENABLE_KERNELSU == 'true'
