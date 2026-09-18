@@ -216,6 +216,52 @@ jobs:
           rm -rf android-kernel; sleep 10
           [ "$i" = 3 ] && { echo "[clone] 最终失败"; exit 1; }
         done
+
+        # ══════════ 子模块（KernelSU）+ drivers/kernelsu 兜底 ══════════
+        # 两棵 renoir/MIUI 树的 drivers/Kconfig 都写着：
+        #   source "drivers/kernelsu/kernel/Kconfig"   (mint_renoir_kernel)
+        #   source "drivers/kernelsu/Kconfig"          (sm8350-miui)
+        # 而 drivers/kernelsu 是指向 KernelSU 子模块的软链。
+        # git clone --depth=1 不拉子模块 -> kconfig 直接报：
+        #   drivers/Kconfig:237: can't open file "drivers/kernelsu/..."
+        #   make[2]: *** [scripts/kconfig/Makefile:90: ..._defconfig] Error 1
+        if [ -f android-kernel/.gitmodules ]; then
+          echo "[submodule] .gitmodules 内容:"
+          sed 's/^/    /' android-kernel/.gitmodules
+          ( cd android-kernel && git submodule update --init --recursive --depth=1 ) \
+            || ( cd android-kernel && git submodule update --init --recursive ) \
+            || echo "::warning::子模块拉取失败，转用兜底软链"
+          ( cd android-kernel && git submodule status | sed 's/^/    /' ) || true
+        fi
+
+        # 兜底：无论子模块是否拉成功，都保证 drivers/kernelsu 可解析。
+        # 链接目标由 drivers/Kconfig 里实际 source 的路径决定。
+        pushd android-kernel >/dev/null
+        if [ ! -e drivers/kernelsu ]; then
+          KSU_EXPECT=$(grep -oE 'source "drivers/kernelsu[^"]*"' drivers/Kconfig | head -1)
+          echo "[kernelsu] drivers/Kconfig 期望: $KSU_EXPECT"
+          case "$KSU_EXPECT" in
+            *"drivers/kernelsu/kernel/Kconfig"*) TGT="$(pwd)/KernelSU"        ;;  # 指向 KSU 仓库根
+            *"drivers/kernelsu/Kconfig"*)        TGT="$(pwd)/KernelSU/kernel" ;;  # 指向 KSU kernel/
+            *)                                    TGT="" ;;
+          esac
+          if [ -n "$TGT" ] && [ -d "$TGT" ]; then
+            ln -sfn "$TGT" drivers/kernelsu
+            echo "[kernelsu] 已建立软链 drivers/kernelsu -> $TGT"
+          else
+            echo "::error::KernelSU 源码缺失（$TGT 不存在），无法满足 drivers/Kconfig"
+            exit 1
+          fi
+        fi
+        echo "[kernelsu] drivers/kernelsu -> $(readlink -f drivers/kernelsu 2>/dev/null || echo '(实体目录)')"
+        ls drivers/kernelsu/ 2>/dev/null | head -6 | sed 's/^/    /'
+        if [ -f drivers/kernelsu/kernel/Kconfig ] || [ -f drivers/kernelsu/Kconfig ]; then
+          echo "[kernelsu] ✅ Kconfig 存在，kconfig 不会再报错"
+        else
+          echo "::error::drivers/kernelsu 下找不到 Kconfig"
+          exit 1
+        fi
+        popd >/dev/null
         if [[ ${{ env.ADD_LOCALVERSION_TO_FILENAME }} == 'true' ]]; then
           echo "LOCALVERSION=$(cat android-kernel/localversion)" >> $GITHUB_ENV
         else
