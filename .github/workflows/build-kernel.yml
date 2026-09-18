@@ -258,10 +258,61 @@ jobs:
         if [ -f drivers/kernelsu/kernel/Kconfig ] || [ -f drivers/kernelsu/Kconfig ]; then
           echo "[kernelsu] ✅ Kconfig 存在，kconfig 不会再报错"
         else
-          echo "::error::drivers/kernelsu 下找不到 Kconfig"
-          exit 1
+          echo "::warning::drivers/kernelsu 尚不可用（将在下个步骤修复，不中断）"
         fi
         popd >/dev/null
+
+    - name: Fix KernelSU source (源码树的 kernelsu 子模块缺 URL)
+      # wannqn/mint_renoir_kernel 的 drivers/kernelsu 是个 gitlink(submodule)，
+      # 但 .gitmodules 里没有它的 url，也不会被 git clone --depth=1 拉下来：
+      #   fatal: No url found for submodule path 'drivers/kernelsu' in .gitmodules
+      # 而该树的挂钩写得很明确：
+      #   drivers/Kconfig:237   source "drivers/kernelsu/kernel/Kconfig"
+      #   drivers/Makefile:192  obj-$(CONFIG_KSU) += kernelsu/kernel/
+      # => drivers/kernelsu 必须是 KernelSU 仓库【根目录】（根下有 kernel/）。
+      # KernelSU-Next 的根目录正是 .gitignore / LICENSE / kernel/ / uapi/ ——完全对上。
+      #
+      # 必须用 KernelSU-Next 而非 tiann 官方版：
+      #   官方版自 v1.0.0 起放弃非 GKI 内核（5.4 只能用 v0.9.5 封顶）；
+      #   KernelSU-Next 的 legacy 分支持续维护 4.9~5.4 非 GKI 支持。
+      # 已核实作者 pin 的 0d6bdc63 就在 legacy 分支线上（compare: ahead_by=342, behind_by=0）。
+      run: |
+        cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
+        KSU_REPO="https://github.com/KernelSU-Next/KernelSU-Next"
+        KSU_PIN="0d6bdc6364cbfc73517dcfdf7ab23b0ba8045553"
+        KSU_DIR="$GITHUB_WORKSPACE/kernel_workspace/KernelSU-Next"
+
+        EXPECT=$(grep -oE 'source "drivers/kernelsu[^"]*"' drivers/Kconfig | head -1 | sed 's/source "//; s/"$//')
+        echo "[kernelsu] drivers/Kconfig 期望路径: ${EXPECT:-（无）}"
+        if [ -z "$EXPECT" ]; then echo "[kernelsu] 本树未挂载 KernelSU，跳过"; exit 0; fi
+
+        # 注意：判据必须是「期望的文件存在」，不能用 -d —— 拉不下来的 gitlink
+        # 会留下一个【空目录】，-d 会误判为已就绪（上次就是这么挂的）。
+        if [ -f "$EXPECT" ]; then echo "[kernelsu] ✅ 已就绪: $EXPECT"; exit 0; fi
+
+        ok=0
+        for REF in "$KSU_PIN" legacy; do
+          rm -rf "$KSU_DIR"
+          if [ "$REF" = "$KSU_PIN" ]; then
+            mkdir -p "$KSU_DIR"
+            ( cd "$KSU_DIR" && git init -q && git remote add origin "$KSU_REPO" \
+              && git fetch -q --depth=1 origin "$REF" && git checkout -q FETCH_HEAD ) && ok=1
+          else
+            git clone -q --depth=1 --branch "$REF" "$KSU_REPO" "$KSU_DIR" && ok=1
+          fi
+          [ "$ok" = 1 ] && { echo "[kernelsu] ✅ 已获取 $KSU_REPO @ $REF"; break; }
+          echo "[kernelsu] ⚠️ $REF 获取失败，试下一个"
+        done
+        [ "$ok" = 1 ] || { echo "::error::KernelSU-Next 拉取失败"; exit 1; }
+
+        echo "[kernelsu] 版本: $( cd "$KSU_DIR" && git log --oneline -1 )"
+        [ -f "$KSU_DIR/kernel/Kconfig" ] || { echo "::error::KernelSU-Next 根下缺 kernel/Kconfig，布局不符"; exit 1; }
+
+        rm -rf drivers/kernelsu
+        ln -sfn "$KSU_DIR" drivers/kernelsu
+        echo "[kernelsu] 软链: drivers/kernelsu -> $KSU_DIR"
+        [ -f "$EXPECT" ] && echo "[kernelsu] ✅ 校验通过，$EXPECT 已可解析" \
+          || { echo "::error::链接后仍无法解析 $EXPECT"; exit 1; }
         if [[ ${{ env.ADD_LOCALVERSION_TO_FILENAME }} == 'true' ]]; then
           echo "LOCALVERSION=$(cat android-kernel/localversion)" >> $GITHUB_ENV
         else
