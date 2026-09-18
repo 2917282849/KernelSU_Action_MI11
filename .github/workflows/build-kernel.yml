@@ -244,6 +244,32 @@ jobs:
     - name: Setup Configuration for Kernel
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
+
+        # ============ 【关键】强制内核版本号与原厂完全一致（vermagic） ============
+        # 原厂 MIUI 内核: 5.4.233-qgki-ge0ae3f4f4643
+        # 默认编译结果:   5.4.233-qgki-g2fe7b2327396-dirty
+        #
+        # 为何必须一致：
+        #   kernel/module.c 的 check_modinfo() 会严格比对模块的 vermagic，
+        #   不一致时拒绝加载：
+        #     "version magic '5.4.233-qgki-g...' should be '5.4.233-qgki-ge0ae3f4f4643'"
+        #   本内核 MODULES=y，且原厂 /vendor/lib/modules 下有上千个模块
+        #   （WiFi/相机/音频/显示...），vemagic 不一致 = 无法开机。
+        #
+        # 达成方式（scripts/setlocalversion）：
+        #   res = ${CONFIG_LOCALVERSION} + ${scm_version}
+        #   1) 把 CONFIG_LOCALVERSION 写成完整后缀
+        #   2) 放一个空的 .scmversion，scm_version() 会直接 cat 它并返回
+        #      -> 不再追加 -g<hash> / -dirty / +
+        #   3) 同时关闭 LOCALVERSION_AUTO 双保险
+        sed -i 's|^CONFIG_LOCALVERSION=.*|CONFIG_LOCALVERSION="-qgki-ge0ae3f4f4643"|' arch/${{ env.ARCH }}/configs/${{ env.KERNEL_CONFIG }}
+        sed -i '/^CONFIG_LOCALVERSION_AUTO=/d' arch/${{ env.ARCH }}/configs/${{ env.KERNEL_CONFIG }}
+        sed -i '/^# CONFIG_LOCALVERSION_AUTO is not set/d' arch/${{ env.ARCH }}/configs/${{ env.KERNEL_CONFIG }}
+        echo "# CONFIG_LOCALVERSION_AUTO is not set" >> arch/${{ env.ARCH }}/configs/${{ env.KERNEL_CONFIG }}
+        : > .scmversion
+        echo "[OK] LOCALVERSION 设置："
+        grep -n "LOCALVERSION" arch/${{ env.ARCH }}/configs/${{ env.KERNEL_CONFIG }}
+
         if [ ${{ env.APPLY_KSU_PATCH }} = true ]; then
             bash $GITHUB_WORKSPACE/patches/patches.sh
             if grep -q "CONFIG_KSU" arch/${{ env.ARCH }}/configs/${{ env.KERNEL_CONFIG }}; then
@@ -337,6 +363,19 @@ jobs:
             make -j$(nproc --all) CC=clang O=out ARCH=${{ env.ARCH }} ${{ env.CUSTOM_CMDS }} ${{ env.EXTRA_CMDS }} ${{ env.GCC_64 }} ${{ env.GCC_32 }}
         fi
 
+    - name: Verify kernel release (vermagic)
+      run: |
+        cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
+        ACTUAL=$(cat out/include/config/kernel.release 2>/dev/null || echo "NOT_FOUND")
+        EXPECTED="5.4.233-qgki-ge0ae3f4f4643"
+        echo "实际内核版本: $ACTUAL"
+        echo "原厂内核版本: $EXPECTED"
+        if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "::error::内核版本号与原厂不一致！原厂 /vendor 下的内核模块将无法加载，禁止刷入。"
+            exit 1
+        fi
+        echo "[OK] 版本号一致，vermagic 应可匹配原厂模块"
+
     - name: Check a kernel output files
       run: |
        cd $GITHUB_WORKSPACE/kernel_workspace
@@ -361,8 +400,19 @@ jobs:
         cd $GITHUB_WORKSPACE/kernel_workspace
         git clone https://github.com/osm0sis/AnyKernel3 --depth=1 AnyKernel3
         sed -i 's/do.devicecheck=1/do.devicecheck=0/g' AnyKernel3/anykernel.sh
-        sed -i 's!block=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot;!block=auto;!g' AnyKernel3/anykernel.sh
-        sed -i 's/is_slot_device=0;/is_slot_device=auto;/g' AnyKernel3/anykernel.sh
+        # ★ 新版 AnyKernel3 的变量名是全大写（BLOCK / IS_SLOT_DEVICE），
+        #   模板原来的小写 sed（block= / is_slot_device=）根本匹配不到，
+        #   导致 BLOCK 仍是三星 Galaxy Nexus 的 OMAP 路径：
+        #     /dev/block/platform/omap/omap_hsmmc.0/by-name/boot
+        #   刷机时会 abort："Unable to determine ... partition. Aborting..."
+        sed -i 's!^BLOCK=.*!BLOCK=boot;!' AnyKernel3/anykernel.sh
+        sed -i 's!^IS_SLOT_DEVICE=.*!IS_SLOT_DEVICE=auto;!' AnyKernel3/anykernel.sh
+        # 兜底（处理旧版小写变量）
+        sed -i 's!^block=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot;!block=auto;!g' AnyKernel3/anykernel.sh
+        sed -i 's!^is_slot_device=0;!is_slot_device=auto;!g' AnyKernel3/anykernel.sh
+        echo "===== anykernel.sh 最终关键配置 ====="
+        grep -nE "^(kernel.string|do\.|BLOCK=|IS_SLOT_DEVICE=|block=|is_slot_device=)" AnyKernel3/anykernel.sh || true
+        echo "===================================="
         cp android-kernel/out/arch/${{ env.ARCH }}/boot/${{ env.KERNEL_IMAGE_NAME }} AnyKernel3/
         if [ ${{ env.CHECK_DTBO_IS_OK }} = true ]; then
             cp android-kernel/out/arch/${{ env.ARCH }}/boot/dtbo.img AnyKernel3/
