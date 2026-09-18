@@ -331,7 +331,10 @@ jobs:
   
     - name: Force kernel version 5.4.233 - 对齐小米原厂 vermagic
       run: |
-        cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
+        cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel || {
+          echo "::error::内核源码目录不存在，前序 Download kernel source 没成功，无法锁定版本号"
+          exit 1
+        }
         echo "--- 修补前 ---"
         grep -nE '^(VERSION|PATCHLEVEL|SUBLEVEL|EXTRAVERSION) =' Makefile
         # 作者这棵树跟到了 5.4.268，而小米原厂内核是 5.4.233。
@@ -730,7 +733,10 @@ jobs:
     - name: Verify vermagic - 必须与小米原厂一字不差
       if: always()
       run: |
-        cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
+        cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel || {
+          echo "::warning::内核源码/Build kernel 未就绪，跳过校验（这不是产物问题）"
+          exit 0
+        }
         echo "--- include/generated/utsrelease.h ---"
         cat include/generated/utsrelease.h 2>/dev/null || echo "(文件不存在，说明还没走到生成阶段)"
         echo "--- vmlinux 里的版本串 ---"
