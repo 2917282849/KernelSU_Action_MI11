@@ -374,6 +374,41 @@ jobs:
         python3 $GITHUB_WORKSPACE/scripts/check_defconfig_dupes.py \
             arch/${{ env.ARCH }}/configs/renoir_stock_kernelsu_defconfig
 
+    - name: Pre-scan missing headers - 提前揪出「被引用但源码树里没有」的头文件
+      continue-on-error: true
+      run: |
+        cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
+        echo "=================================================================="
+        echo " 预扫描：被 #include 引用、但源码树里不存在的头文件"
+        echo "=================================================================="
+        echo " 为什么要有这步：小米公开的源码树漏发了文件。实测 <linux/usb/f_dtp.h>"
+        echo " 在两棵公开树里都是 404，害得编译跑到 20-30 分钟才暴毙、白烧一次 CI。"
+        echo " 这步只报告、不拦截（有些缺失是 #ifdef 关掉的，属于误报）。"
+        echo
+        INC=$GITHUB_WORKSPACE/inc_all.txt
+        grep -rhoE '#include <[A-Za-z0-9_./+-]+>' --include=*.c --include=*.h \
+             drivers techpack sound 2>/dev/null \
+          | sed -E 's/#include <(.*)>/\1/' | sort -u > "$INC" || true
+        echo "  被引用的头文件总数: $(wc -l < "$INC" 2>/dev/null || echo 0)"
+        echo "  ────────────── 缺失清单 ──────────────"
+        N=0
+        while IFS= read -r inc; do
+          [ -z "$inc" ] && continue
+          if [ -f "include/$inc" ] \
+             || [ -f "arch/${{ env.ARCH }}/include/$inc" ] \
+             || [ -f "arch/${{ env.ARCH }}/include/generated/$inc" ] \
+             || [ -f "include/generated/$inc" ]; then
+            continue
+          fi
+          N=$((N+1))
+          echo "  [缺失] $inc"
+        done < "$INC"
+        echo "  ──────────────────────────────────────"
+        echo "  缺失合计: $N 个"
+        echo
+        echo "  ★ 若其中任何一个属于本次会编译到的驱动，编译必然失败。"
+        echo "    修法二选一：① 补上该头文件  ② 在 defconfig 里关掉对应驱动。"
+
     - name: Setup KernelSU
       if: env.ENABLE_KERNELSU == 'true'
       run: |
