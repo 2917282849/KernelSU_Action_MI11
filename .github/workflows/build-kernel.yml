@@ -376,6 +376,47 @@ jobs:
         echo "# CONFIG_WERROR is not set" >> arch/${{ env.ARCH }}/configs/${{ env.KERNEL_CONFIG }}
         echo "[OK] 已关闭 CONFIG_WERROR（若存在）"
 
+    - name: Pre-flight check - kconfig 死循环快速失败
+      run: |
+        cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
+        export PATH=$GITHUB_WORKSPACE/kernel_workspace/clang-aosp/bin:$PATH
+
+        # ---- 静态检查 ----
+        # 找出 int/hex 类型 + 有 prompt + 无 default 的配置项。
+        # 这类项若值为空，syncconfig 会报 "symbol value '' invalid"
+        # 然后 "Error in reading or end of file"【无限循环】。
+        echo "===== 静态检查：无 default 的 int/hex 项 ====="
+        python3 $GITHUB_WORKSPACE/scripts/check_no_default_int.py \
+            . $GITHUB_WORKSPACE/configs/renoir_stock_kernelsu_defconfig \
+            || { echo "::error::存在无有效值的 int/hex 项，会导致 kconfig 死循环"; exit 1; }
+
+        # ---- 动态检查 ----
+        # 真跑一遍 kconfig，加 timeout；退出码 124 = 超时 = 死循环。
+        # 上一次就是因为没这层保护，白白烧了 1 小时才发现。
+        echo "===== 动态检查：实际执行 kconfig（最长 15 分钟）====="
+        set +e
+        timeout 900 make -j$(nproc --all) CC=clang O=out ARCH=${{ env.ARCH }} \
+            ${{ env.CUSTOM_CMDS }} ${{ env.EXTRA_CMDS }} \
+            ${{ env.GCC_64 }} ${{ env.GCC_32 }} \
+            ${{ env.KERNEL_CONFIG }} > cfg_check.log 2>&1
+        rc=$?
+        set -e
+        tail -20 cfg_check.log
+        if [ $rc -eq 124 ]; then
+            echo "::error::kconfig 超时（死循环）—— 参见 cfg_check.log 末尾"
+            exit 1
+        fi
+        if [ $rc -ne 0 ]; then
+            echo "::error::kconfig 执行失败 rc=$rc"
+            exit 1
+        fi
+        # 死循环的另一个特征：日志里出现大量重复行
+        if [ "$(grep -c 'Error in reading' cfg_check.log)" -gt 5 ]; then
+            echo "::error::cfg_check.log 里出现 'Error in reading' 重复 -> 死循环"
+            exit 1
+        fi
+        echo "[OK] kconfig 正常，不会死循环"
+
     - name: Setup ccache
       if: env.ENABLE_CCACHE == 'true'
       uses: hendrikmuhs/ccache-action@v1.2
