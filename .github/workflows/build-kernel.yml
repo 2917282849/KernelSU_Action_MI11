@@ -395,6 +395,14 @@ jobs:
         N=0
         while IFS= read -r inc; do
           [ -z "$inc" ] && continue
+          # 只检查会按「源码树根」解析的 include（linux/xxx、asm/xxx 等）；
+          # 像 ../../core/src/foo.h、../fts_fw.h、AR900B/hw/... 这种是按
+          # 「包含它的那个文件所在目录」解析的，在这里判必然误报，直接跳过。
+          case "$inc" in
+            *..*) continue ;;
+            linux/*|asm/*|asm-generic/*|soc/*|media/*|net/*|sound/*|video/*|dt-bindings/*|uapi/*|trace/*|crypto/*|keys/*|kvm/*|dma/*|misc/*|pinctrl/*|regulator/*|power/*|clk/*|bus/*|iio/*|mfd/*|mmc/*|mtd/*|phy/*|pwm/*|rtc/*|spi/*|thermal/*|tty/*|usb/*|w1/*|watchdog/*|scsi/*|nvme/*|pci/*|acpi/*|target/*|input/*|leds/*|mailbox/*|slimbus/*|spmi/*|platform_data/*) ;; 
+            *) continue ;;
+          esac
           if [ -f "include/$inc" ] \
              || [ -f "arch/${{ env.ARCH }}/include/$inc" ] \
              || [ -f "arch/${{ env.ARCH }}/include/generated/$inc" ] \
