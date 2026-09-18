@@ -79,7 +79,16 @@ jobs:
         echo "BUILD_TIME=$(TZ=Asia/Shanghai date "+%Y%m%d%H%M")" >> $GITHUB_ENV
         echo "DEVICE=$(echo ${{ env.KERNEL_CONFIG }} | sed 's!vendor/!!;s/_defconfig//;s/_user//;s/-perf//')" >> $GITHUB_ENV
         sudo apt-get update
-        sudo apt-get install git ccache automake flex lzop bison gperf build-essential zip curl zlib1g-dev g++-multilib libxml2-utils bzip2 libbz2-dev libbz2-1.0 libghc-bzlib-dev squashfs-tools pngcrush schedtool dpkg-dev liblz4-tool make optipng maven libssl-dev pwgen libswitch-perl policycoreutils minicom libxml-sax-base-perl libxml-simple-perl bc libc6-dev-i386 lib32ncurses5-dev libx11-dev lib32z-dev libgl1-mesa-dev xsltproc unzip device-tree-compiler python2 python3
+        sudo apt-get install -y git ccache automake flex lzop bison gperf build-essential zip curl zlib1g-dev g++-multilib libxml2-utils bzip2 libbz2-dev libbz2-1.0 libghc-bzlib-dev squashfs-tools pngcrush schedtool dpkg-dev liblz4-tool make optipng maven libssl-dev pwgen libswitch-perl policycoreutils minicom libxml-sax-base-perl libxml-simple-perl bc libx11-dev libgl1-mesa-dev xsltproc unzip device-tree-compiler python3 || true
+        # Ubuntu 24.04 已移除的包（原模板遗留）：python2, lib32ncurses5-dev, libc6-dev-i386, lib32z-dev
+        # 逐个尽力安装，失败也不阻断构建
+        for pkg in python2 lib32ncurses5-dev libc6-dev-i386 lib32z-dev; do
+          sudo apt-get install -y $pkg || echo "[skip] $pkg 在 Ubuntu 24.04 不可用，已跳过"
+        done
+        # 内核 5.4 构建脚本有时硬编码 `python`，但 24.04 只有 python3
+        # 建软链接兜底（社区标准做法），避免 "python: not found"
+        sudo ln -sf /usr/bin/python3 /usr/bin/python || true
+        python --version || true
         mkdir -p $GITHUB_WORKSPACE/kernel_workspace
 
     - name: Download Clang-aosp
