@@ -329,6 +329,23 @@ jobs:
             echo "HAVE_SOURCE_BOOT_IMAGE=true" >> $GITHUB_ENV
         fi
   
+    - name: Force kernel version 5.4.233 - 对齐小米原厂 vermagic
+      run: |
+        cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
+        echo "--- 修补前 ---"
+        grep -nE '^(VERSION|PATCHLEVEL|SUBLEVEL|EXTRAVERSION) =' Makefile
+        # 作者这棵树跟到了 5.4.268，而小米原厂内核是 5.4.233。
+        # vermagic = VERSION.PATCHLEVEL.SUBLEVEL[-LOCALVERSION]，
+        # SUBLEVEL 不改回 233，编出来的内核会被小米 stock 模块以
+        # "version magic mismatch" 拒载 -> 模块加载失败 -> 卡 logo。
+        # 只改版本号这一行，不动任何代码，ABI 零影响。
+        sed -i -E 's/^SUBLEVEL = .*/SUBLEVEL = 233/' Makefile
+        echo "--- 修补后 ---"
+        grep -nE '^(VERSION|PATCHLEVEL|SUBLEVEL|EXTRAVERSION) =' Makefile
+        V=$(grep -E '^SUBLEVEL = ' Makefile | awk '{print $3}')
+        [ "$V" = "233" ] || { echo "::error::SUBLEVEL 修补失败，当前=$V"; exit 1; }
+        echo "[OK] 内核版本已锁定为 5.4.233"
+
     - name: Install stock kernel config (extracted from factory boot.img)
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
@@ -709,6 +726,20 @@ jobs:
             cp android-kernel/out/arch/${{ env.ARCH }}/boot/dtbo.img AnyKernel3/
         fi
         rm -rf AnyKernel3/.git* AnyKernel3/README.md
+
+    - name: Verify vermagic - 必须与小米原厂一字不差
+      if: always()
+      run: |
+        cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
+        echo "--- include/generated/utsrelease.h ---"
+        cat include/generated/utsrelease.h 2>/dev/null || echo "(文件不存在，说明还没走到生成阶段)"
+        echo "--- vmlinux 里的版本串 ---"
+        strings vmlinux 2>/dev/null | grep -m3 -E '^5\.4\.[0-9]+' || true
+        if grep -q '5.4.233-qgki-ge0ae3f4f4643' include/generated/utsrelease.h 2>/dev/null; then
+          echo "[OK] vermagic = 5.4.233-qgki-ge0ae3f4f4643，与小米原厂一致，stock 模块可加载"
+        else
+          echo "::warning::vermagic 与小米原厂不一致 —— 此内核刷入会卡 logo，不要用"
+        fi
 
     - name: Make boot image
       if: env.HAVE_SOURCE_BOOT_IMAGE == 'true' && env.CHECK_FILE_IS_OK == 'true'
