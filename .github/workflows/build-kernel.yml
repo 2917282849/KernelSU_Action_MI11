@@ -269,6 +269,14 @@ jobs:
           fi
         done
 
+        # ★★ 重复赋值检测（防止静默覆盖）★★
+        # 重复写同一符号时 kconfig 只发 warning，后写胜出。
+        # 实测教训：整份追加原厂 vendor defconfig 造成 925 处覆盖，
+        # 使 108 项配置偏离原厂（如原厂 DEBUG_FS=n 被改成 y）。
+        echo "--- 重复赋值检测（防止静默覆盖）---"
+        python3 $GITHUB_WORKSPACE/scripts/check_defconfig_dupes.py \
+            arch/${{ env.ARCH }}/configs/renoir_stock_kernelsu_defconfig
+
     - name: Setup KernelSU
       if: env.ENABLE_KERNELSU == 'true'
       run: |
@@ -479,7 +487,8 @@ jobs:
         cd $GITHUB_WORKSPACE/kernel_workspace
         python3 $GITHUB_WORKSPACE/scripts/verify_config.py \
           android-kernel/out/arch/${{ env.ARCH }}/boot/${{ env.KERNEL_IMAGE_NAME }} \
-          $GITHUB_WORKSPACE/configs/renoir_factory_reference.config
+          $GITHUB_WORKSPACE/configs/renoir_factory_reference.config \
+          android-kernel
 
     - name: Check a kernel output files
       run: |

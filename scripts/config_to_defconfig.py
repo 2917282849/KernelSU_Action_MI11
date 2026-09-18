@@ -19,14 +19,18 @@
       Error in reading or end of file.        <- 无限循环
   实测导致日志膨胀到 838MB、编译完全卡死。
 
-== 本脚本的做法（保守、最小改动）==
-1. 原样保留 .config 的每一行（只丢弃 4 个会引发问题的 int 项形式）
-2. 在文件【末尾追加】以下内容：
-     a) 从原厂 defconfig 逐行继承（它才是 kconfig 的合法输入，
-        含 LITTLE_CPU_MASK=15 这类无 default 项的必需取值）
-        —— 放在末尾，让原厂取值覆盖 .config 中的可疑值
-     b) KernelSU 与构建健壮性补丁项
-3. 不解析 Kconfig，不做类型推断 —— 避免自作聪明引入新 bug
+== 本脚本的做法（最小改动）==
+1. 原样保留 .config 的每一行（只剔除 3 个会引发死循环的 int 项形式）
+2. 从原厂 defconfig 里【只提取】那 3 个 int 项的取值，追加到末尾
+3. 追加 KernelSU 与构建健壮性补丁项
+4. 不解析 Kconfig，不做类型推断 —— 避免自作聪明引入新 bug
+
+【为什么不整份继承原厂 defconfig】
+原厂 vendor/renoir-qgki_defconfig 与 .config 有 925 个符号重叠，
+整份追加会以“后写胜出”静默覆盖 .config：
+    warning: override: reassigning to symbol DEBUG_FS
+实测造成 108 项非预期差异（原厂 DEBUG_FS=n 被改成 y）。
+而 .config 才是真正编译出原厂内核的配置，权威性更高。
 
 用法:
   python3 config_to_defconfig.py <输入.config> <原厂defconfig> <输出defconfig>
@@ -40,6 +44,16 @@ NO_DEFAULT_INTS = (
     "CONFIG_LITTLE_CPU_MASK",
     "CONFIG_BIG_CPU_MASK",
     "CONFIG_PRIME_CPU_MASK",
+)
+
+# EXTRA 块会设置的项 —— 必须先从基底 .config 里剔除，
+# 避免同一符号重复赋值被 kconfig 静默覆盖
+OVERRIDDEN = (
+    "CONFIG_LOCALVERSION",
+    "CONFIG_LOCALVERSION_AUTO",
+    "CONFIG_FRAME_WARN",
+    "CONFIG_KSU",
+    "CONFIG_WERROR",
 )
 
 EXTRA = """
@@ -88,43 +102,51 @@ def main():
         if not drop:
             out.append(ln)
 
-    # LOCALVERSION / LOCALVERSION_AUTO 交给原厂 defconfig + EXTRA 处理，
-    # 避免两处不一致
+    # ---- 1b) 剔除 EXTRA 块将要设置的项 ----
+    # 否则同一符号出现两次 -> kconfig 静默覆盖（override: reassigning）。
+    # check_defconfig_dupes.py 会把重复赋值当错误拦下，所以基底里必须干净。
     out = [
         ln
         for ln in out
-        if not ln.startswith("CONFIG_LOCALVERSION=")
-        and not ln.startswith("CONFIG_LOCALVERSION_AUTO=")
-        and ln.strip() != "# CONFIG_LOCALVERSION_AUTO is not set"
+        if not any(
+            ln.strip() == f"# {k} is not set"
+            or ln.strip() == f"{k} is not set"
+            or ln.startswith(k + "=")
+            for k in OVERRIDDEN
+        )
     ]
 
-    # ---- 2) 追加原厂 defconfig 全文（合法输入，含无 default 项的必需取值）----
-    # 放最后 => 其取值优先，覆盖 .config 里可能过时的项
-    ref_lines = [ln for ln in ref if ln.strip()]
-    # 原厂 defconfig 自身也写 "is not set"，这些是合法输入（bool 项），保留
-    # 但剔除它可能带的 LOCALVERSION（由我们统一指定）
-    ref_lines = [
-        ln for ln in ref_lines if not ln.startswith("CONFIG_LOCALVERSION=")
-    ]
+    # ---- 2) 原厂 defconfig 只用来【提取】无 default int 项的取值 ----
+    #
+    # 【重要教训】不要把原厂 defconfig 全文追加进来！
+    # 它与 .config 有 925 个符号重叠，会以“后写胜出”的方式静默覆盖：
+    #   arch/arm64/configs/..._defconfig:7950:warning: override: reassigning to symbol XXX
+    # 实测导致与原厂产生 108 项非预期差异（如原厂 DEBUG_FS=n 被改成 y）。
+    # 而 .config 才是【真正编译出原厂内核】的那份配置，权威性更高。
+    # 所以这里只取那 3 个必需的 int 值，其余一概不拿。
+    ref_vals = {}
+    for ln in ref:
+        s = ln.strip()
+        for k in NO_DEFAULT_INTS:
+            if s.startswith(k + "=") and s != f"{k}=":
+                ref_vals[k] = s
 
     # ---- 3) 组装 ----
-    text = (
-        "\n".join(out)
-        + "\n\n# ======== 以下继承自原厂 vendor/renoir-qgki_defconfig ========\n"
-        + "\n".join(ref_lines)
-        + "\n"
-        + EXTRA
-    )
+    text = "\n".join(out) + "\n"
+    if ref_vals:
+        text += "\n# ======== 无 default 的 int 项（只从原厂 defconfig 取这 3 个值）========\n"
+        text += "\n".join(ref_vals[k] for k in NO_DEFAULT_INTS if k in ref_vals) + "\n"
+    text += EXTRA
 
     with open(out_path, "w", encoding="utf-8") as fh:
         fh.write(text)
 
     # ---- 4) 自检 ----
     lines = text.split("\n")
-    print(f"[i] 输入 .config      : {len(src)} 行")
-    print(f"[i] 剔除无 default int: {len(dropped)} 处 -> {dropped}")
-    print(f"[i] 继承原厂 defconfig: {len(ref_lines)} 行")
-    print(f"[i] 输出              : {len(lines)} 行, {len(text)} 字节 -> {out_path}")
+    print(f"[i] 输入 .config        : {len(src)} 行")
+    print(f"[i] 剔除无 default int  : {len(dropped)} 处 -> {dropped}")
+    print(f"[i] 从原厂 defconfig 提取: {len(ref_vals)} 个 int 取值 -> {ref_vals}")
+    print(f"[i] 输出                : {len(lines)} 行, {len(text)} 字节 -> {out_path}")
 
     for k in NO_DEFAULT_INTS:
         hits = [l for l in lines if l.startswith(k + "=")]
