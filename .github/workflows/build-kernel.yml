@@ -329,6 +329,27 @@ jobs:
             echo "HAVE_SOURCE_BOOT_IMAGE=true" >> $GITHUB_ENV
         fi
   
+    - name: Fix missing export - nl80211hdr_put (qcacld wlan.ko 需要)
+      run: |
+        cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel || {
+          echo "::error::内核源码目录不存在"; exit 1
+        }
+        F=net/wireless/nl80211.c
+        if [ ! -f "$F" ]; then echo "::warning::$F 不存在，跳过"; exit 0; fi
+        if grep -qE 'EXPORT_SYMBOL(_GPL)?\(nl80211hdr_put\)' "$F"; then
+          echo "[OK] $F 已导出 nl80211hdr_put"
+        else
+          # 这棵树定义了 nl80211hdr_put 却没导出；而 qcacld 编成的 wlan.ko
+          # 要调用它 -> modpost 报 "undefined!" -> 整个构建在 modules 阶段挂掉。
+          # 原厂内核必然导出过它（否则原厂 wlan.ko 根本加载不了），
+          # 所以这里补一行导出，是与原厂行为一致的补丁。
+          # ABI 影响：只新增一个导出符号，不改变任何已有符号的 CRC。
+          printf '\n/* 小米内核补充导出：qcacld 的 wlan.ko 需要调用 */\nEXPORT_SYMBOL(nl80211hdr_put);\n' >> "$F"
+          echo "[OK] 已向 $F 追加 EXPORT_SYMBOL(nl80211hdr_put)"
+        fi
+        tail -3 "$F"
+        grep -c 'EXPORT_SYMBOL(nl80211hdr_put)' "$F" | xargs -I{} echo "  导出出现次数: {}"
+
     - name: Force kernel version 5.4.233 - 对齐小米原厂 vermagic
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel || {
@@ -737,11 +758,13 @@ jobs:
           echo "::warning::内核源码/Build kernel 未就绪，跳过校验（这不是产物问题）"
           exit 0
         }
-        echo "--- include/generated/utsrelease.h ---"
-        cat include/generated/utsrelease.h 2>/dev/null || echo "(文件不存在，说明还没走到生成阶段)"
+        U=out/include/generated/utsrelease.h
+        [ -f "$U" ] || U=include/generated/utsrelease.h
+        echo "--- $U ---"
+        cat "$U" 2>/dev/null || echo "(文件不存在，说明还没走到生成阶段)"
         echo "--- vmlinux 里的版本串 ---"
         strings vmlinux 2>/dev/null | grep -m3 -E '^5\.4\.[0-9]+' || true
-        if grep -q '5.4.233-qgki-ge0ae3f4f4643' include/generated/utsrelease.h 2>/dev/null; then
+        if grep -q '5.4.233-qgki-ge0ae3f4f4643' "$U" 2>/dev/null; then
           echo "[OK] vermagic = 5.4.233-qgki-ge0ae3f4f4643，与小米原厂一致，stock 模块可加载"
         else
           echo "::warning::vermagic 与小米原厂不一致 —— 此内核刷入会卡 logo，不要用"
