@@ -650,6 +650,21 @@ jobs:
             make -j$(nproc --all) CC=clang O=out ARCH=${{ env.ARCH }} ${{ env.CUSTOM_CMDS }} ${{ env.EXTRA_CMDS }} ${{ env.GCC_64 }} ${{ env.GCC_32 }}
         fi
 
+    - name: CRC pre-check - 模块 ABI 硬门槛（不符就是卡 logo，别刷）
+      run: |
+        cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel || {
+          echo "::error::内核源码目录不存在"; exit 1
+        }
+        S=out/Module.symvers
+        [ -f "$S" ] || S=Module.symvers
+        if [ ! -f "$S" ]; then
+          echo "::error::找不到 Module.symvers（构建没有正常完成）"
+          exit 1
+        fi
+        echo "  我们的符号表: $S ($(wc -l < "$S") 行)"
+        python3 $GITHUB_WORKSPACE/scripts/crc_check.py "$S" \
+          $GITHUB_WORKSPACE/configs/vendor_module_crc.txt
+
     - name: Verify kernel release (vermagic)
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
@@ -784,6 +799,15 @@ jobs:
             exit 1
         fi
     
+    - name: Upload Module.symvers - CRC 表，便于本地复核
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: Module.symvers-${{ github.run_number }}
+        path: kernel_workspace/android-kernel/out/Module.symvers
+        if-no-files-found: ignore
+        retention-days: 3
+
     - name: Upload ${{ env.KERNEL_IMAGE_NAME }}
       if: env.CHECK_FILE_IS_OK == 'true'
       uses: actions/upload-artifact@v4
